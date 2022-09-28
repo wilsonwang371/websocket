@@ -264,6 +264,7 @@ type Conn struct {
 	reader  io.ReadCloser // the current reader returned to the application
 	readErr error
 	br      *bufio.Reader
+	brMu    sync.Mutex
 	// bytes remaining in current frame.
 	// set setReadRemaining to safely update this value and prevent overflow
 	readRemaining int64
@@ -308,6 +309,7 @@ func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, 
 	c := &Conn{
 		isServer:               isServer,
 		br:                     br,
+		brMu:                   sync.Mutex{},
 		conn:                   conn,
 		mu:                     mu,
 		readFinal:              true,
@@ -368,6 +370,8 @@ func (c *Conn) writeFatal(err error) error {
 }
 
 func (c *Conn) read(n int) ([]byte, error) {
+	c.brMu.Lock()
+	defer c.brMu.Unlock()
 	p, err := c.br.Peek(n)
 	if err == io.EOF {
 		err = errUnexpectedEOF
@@ -795,6 +799,8 @@ func (c *Conn) advanceFrame() (int, error) {
 	// 1. Skip remainder of previous frame.
 
 	if c.readRemaining > 0 {
+		c.brMu.Lock()
+		defer c.brMu.Unlock()
 		if _, err := io.CopyN(ioutil.Discard, c.br, c.readRemaining); err != nil {
 			return noFrame, err
 		}
@@ -1047,7 +1053,9 @@ func (r *messageReader) Read(b []byte) (int, error) {
 			if int64(len(b)) > c.readRemaining {
 				b = b[:c.readRemaining]
 			}
+			c.brMu.Lock()
 			n, err := c.br.Read(b)
+			c.brMu.Unlock()
 			c.readErr = hideTempErr(err)
 			if c.isServer {
 				c.readMaskPos = maskBytes(c.readMaskKey, c.readMaskPos, b[:n])
